@@ -160,59 +160,41 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
+  /* Stack growth if necessary */
+  //first check if within stack boundaries. 
+  if( fault_addr < PHYS_BASE && fault_addr >= PHYS_BASE - STACK_LIMIT){
+    if(user){
+      if(fault_addr >= f->esp || f->esp-4== fault_addr || f->esp-32 == fault_addr){
+        stack_grow();
+        return;
+      }
+    }else{
+      void * esp = thread_current()->user_esp;
+      int stack_boundary = thread_current()->stack_boundary;
+      if(fault_addr < stack_boundary){
+        stack_grow();
+        return;
+      }
+    }
+  }
+
   // Page faults can be caused by user/kernel threads. We are trying to handle user threads.
-
-  //Dunno if i should delete this as of yet. 
-  /* User program can access invalid pointer - do not make pintos crash */
   if(user){
-      //Now what does a page fault do?
-    /* 
-    1) Check if invalid access- ALL zero page, kernel VM, write to read-only. If so, terminate process and free resouerces.
-    2) If valid, use sup table to locate data that goes in the page.
-    3) Obtain a frame to store the page.
-    4) Copy data into the frame.
-    5) Update page table entry. 
-    */
-
-
     /* Before dealing with page fault, make sure no other process is dealing with page fault. */
     //have a page fault lock or disable interrupts?
-
-
     struct thread * cur = thread_current();
-    void * upage = (void *) pg_no(fault_addr);
+    void * upage = (void *) pg_round_down(fault_addr);
     void * kpage;
     struct sup_table_entry * ste = sup_table_lookup(upage);
-
-
-    /* Check if stack growth */
-    void * stack_boundary = thread_current()->stack_boundary;
-    /* Do this for now, but esp could be manipulated. 
-      In those cases, check if esp-32 and esp-4 are mapped regions.
-      or something like that. or could have another esp for saving prev esp.*/
-    
-    /* Stack grows downward to a lower address. */
-    // if(f->esp <= (stack_boundary-32)){
-    //   printf("should be here\n");
-    //   stack_grow();
-    //   return;
-    // }
-    if(f->esp < stack_boundary && f->esp >= stack_boundary-32){
-      printf("should be here\n");
-      stack_grow();
-      return;
-    }
-
-
 
     /* Check if invalid access- kernel or writing r/o */
     if( fault_addr == NULL ||is_kernel_vaddr(fault_addr) || 
           (write && !not_present) || ste == NULL){
+      printf("FILE: %s\n", thread_current()->file_name);
       terminate_thread();
     }
     
     enum page_location location = ste->location;
-
     switch(location){
 
       case ALL_ZERO:
@@ -227,7 +209,6 @@ page_fault (struct intr_frame *f)
         break;
 
       case IN_SWAP:
-        printf("SWAPPING HAPPENIN\n");
         /* Obtain a frame- factor this? */
         kpage = palloc_get_page(PAL_USER);
         if(kpage == NULL){
@@ -278,7 +259,7 @@ page_fault (struct intr_frame *f)
   // kill (f);
 }
 
-static void stack_grow(void ){
+static void stack_grow(void){
   struct thread * cur = thread_current();
   uint8_t * stack_boundary = cur->stack_boundary;
 

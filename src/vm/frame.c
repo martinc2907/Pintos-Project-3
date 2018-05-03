@@ -37,6 +37,8 @@ void frame_table_set_frame(void * upage, int tid){
 	f->upage = upage; 
 	f->tid = tid;
 	hash_insert(&ft->frames, &f->hash_elem);
+
+	ASSERT(frame_table_lookup(upage,tid)!= NULL);
 }
 
 
@@ -60,6 +62,7 @@ void frame_table_evict_frame(){
 	struct frame_table_entry * fte = hash_entry(e, struct frame_table_entry, hash_elem);
 	upage = fte->upage;
 	kpage = pagedir_get_page(pagedir, upage);
+	ASSERT(e != NULL);
 
 	/* Free the entry */
 	free(fte);

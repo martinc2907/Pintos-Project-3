@@ -134,7 +134,6 @@ start_process (void *aux)
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);  //file_name points to the same location, but it only refers to the first argument since null termianted. 
 
-
   /* Add child(this thread) to parent's children_list */
   struct child * c = add_child(thread_current()->parent,thread_tid());
   if(!success)
@@ -533,7 +532,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  //file_close (file);
   return success;
 }
 
@@ -629,7 +627,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       /* Load this page. */
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
         {
-          printf("FUCK\n");
           palloc_free_page (kpage);
           return false; 
         }

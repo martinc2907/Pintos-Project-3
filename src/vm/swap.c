@@ -12,6 +12,7 @@ extern struct swap_table * swap_table_ptr;
 
 
 /* Create swap table */
+//bitmap is initally all set to false. false = block available. true=in use.
 void swap_create(void){
 	printf("CREATING SWAP TABLE\n");
 	int no_of_pages;
@@ -29,6 +30,7 @@ int swap_out(void * kpage){
 	int i;
 	int index = bitmap_scan_and_flip(swap_table_ptr->swap_bitmap,0,1,false);
 	if(index == BITMAP_ERROR){
+		printf("FUCKK QUIT\n");
 		//no space in swap block.
 		//do something.( see manual)
 	}
@@ -62,5 +64,6 @@ void swap_free(int index){
 }
 
 void swap_destroy(void){
+	//free the global pointer too!!!!!!!!!!!!!
 	bitmap_destroy(swap_table_ptr->swap_bitmap);
 }

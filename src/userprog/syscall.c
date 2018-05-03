@@ -8,6 +8,7 @@
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "threads/palloc.h"
+#include "threads/malloc.h"
 #include "devices/input.h"
 #include "threads/vaddr.h"
 #include "userprog/pagedir.h"
@@ -61,6 +62,7 @@ syscall_handler (struct intr_frame *f UNUSED)
 	void * user_esp = f->esp;
 	check_user_pointer(f,user_esp);	//check if esp is valid.
 	int sys_call_no = *((int *)user_esp);
+	thread_current()->user_esp = f->esp;	//for page fault handling.
 
 	switch(sys_call_no){
 		case SYS_HALT:

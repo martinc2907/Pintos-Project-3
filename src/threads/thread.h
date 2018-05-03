@@ -120,6 +120,7 @@ struct thread
     struct sup_table * sup_table;
     void * stack_boundary;
     int stack_size;
+    void * user_esp;
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
