@@ -18,6 +18,8 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
+#include "threads/synch.h"
+#include "userprog/exception.h"
 
 #include "vm/page.h"
 #include "vm/frame.h"
@@ -32,6 +34,8 @@ static struct child * search_child(pid_t pid);
 
 /* Lock for file system. */
 extern struct lock file_lock;
+
+extern struct lock page_fault_lock;
 
 
 /* Starts a new thread running a user program loaded from
@@ -616,12 +620,14 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
+      lock_acquire(&page_fault_lock);
       uint8_t *kpage = palloc_get_page (PAL_USER);
       if (kpage == NULL){
         frame_table_evict_frame();
         kpage = palloc_get_page(PAL_USER);
         ASSERT(kpage != NULL);
       }
+      lock_release(&page_fault_lock);
       //return false if mem allocation fails. 
 
       /* Load this page. */
@@ -656,12 +662,14 @@ setup_stack (void **esp)
   bool success = false;
   struct thread * cur = thread_current();
 
+  lock_acquire(&page_fault_lock);
   kpage = palloc_get_page (PAL_USER | PAL_ZERO);
   if(kpage == NULL){
     frame_table_evict_frame();
     kpage = palloc_get_page(PAL_USER);
     ASSERT(kpage != NULL);
   }
+  lock_release(&page_fault_lock);
 
   success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
   cur->stack_boundary = ((uint8_t *) PHYS_BASE) - PGSIZE;
@@ -688,18 +696,22 @@ static bool
 install_page (void *upage, void *kpage, bool writable)
 {
   struct thread *t = thread_current ();
-  //printf("install : %d\n", upage);
+
+  lock_acquire(&page_fault_lock);
 
   /* Verify that there's not already a page at that virtual address */
   if(pagedir_get_page(t->pagedir, upage) != NULL){
+    lock_release(&page_fault_lock);
     return false;
   }
 
   if(pagedir_set_page(t->pagedir, upage,kpage,writable)){
     frame_table_set_frame(upage, t->tid);
     sup_table_set_page(upage, writable);
+    lock_release(&page_fault_lock);
     return true;
   }
+  lock_release(&page_fault_lock);
   return false;
 
   // /* Verify that there's not already a page at that virtual

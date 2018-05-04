@@ -9,6 +9,7 @@
 #include "vm/page.h"
 
 extern struct frame_table * ft;
+extern struct lock frame_table_lock;
 
 static unsigned frame_hash(const struct hash_elem *f_, void * aux UNUSED);
 static bool frame_less(const struct hash_elem *a_, const struct hash_elem *b_,void * aux UNUSED);
@@ -21,6 +22,7 @@ void frame_table_create(int max_size_){
 	ft = malloc(sizeof (struct frame_table));
 	ft->max_size = max_size_;	//replace with the number of avaialble physical frames.
 	hash_init(&ft->frames, frame_hash,frame_less,NULL);
+	lock_init(&frame_table_lock);
   	// printf("FINISHING FRAME TABLE\n");
 }
 
@@ -33,10 +35,13 @@ void frame_table_set_frame(void * upage, int tid){
 	ASSERT(hash_size(&ft->frames) < ft->max_size);
 	ASSERT(frame_table_lookup(upage, tid)== NULL);
 
+	lock_acquire(&frame_table_lock);
 	struct frame_table_entry * f = malloc(sizeof(struct frame_table_entry));
 	f->upage = upage; 
 	f->tid = tid;
+	f->pinned = false;
 	hash_insert(&ft->frames, &f->hash_elem);
+	lock_release(&frame_table_lock);
 
 	ASSERT(frame_table_lookup(upage,tid)!= NULL);
 }
@@ -45,18 +50,30 @@ void frame_table_set_frame(void * upage, int tid){
 
 /* Evict a frame.  */
 void frame_table_evict_frame(){
-	// printf("EVICTION CALLED!!\n");
+
 	/* Evict one randomly for now */
 	uint32_t * pagedir = thread_current()->pagedir;
 	void * kpage;
 	void * upage;
 
 	/* Delete from frame table */
+	lock_acquire(&frame_table_lock);
 	struct hash_iterator i;
 	hash_first(&i,&ft->frames);
-	hash_next(&i);
+
+	//hash_next(&i);
+	while(hash_next(&i)){
+		struct frame_table_entry * temp = hash_entry(hash_cur(&i), struct frame_table_entry, hash_elem);
+		
+		if(temp->pinned == false){
+			break;
+		}
+	}
+
 	struct hash_elem * e = hash_delete(&ft->frames,hash_cur(&i));
 	ASSERT(e != NULL);
+
+	lock_release(&frame_table_lock);
 
 	/* Frame table entry points to upage. Get kpage. */
 	struct frame_table_entry * fte = hash_entry(e, struct frame_table_entry, hash_elem);
@@ -82,15 +99,19 @@ struct frame_table_entry * frame_table_lookup(void * upage, int tid){
 	struct frame_table_entry fte;
 	struct hash_elem * e;
 
+	lock_acquire(&frame_table_lock);
 	fte.upage = upage;
 	fte.tid = tid;
 	e = hash_find(&ft->frames,&fte.hash_elem);
+	lock_release(&frame_table_lock);
 
 	return e == NULL ? NULL : hash_entry(e, struct frame_table_entry, hash_elem);
 }
 
 /* Delete and free entry */
 void frame_table_delete_entry(void * upage, int tid){
+
+	lock_acquire(&frame_table_lock);
 	struct hash_elem * e;
 
 	struct frame_table_entry fte; 
@@ -100,6 +121,7 @@ void frame_table_delete_entry(void * upage, int tid){
 	e = hash_delete(&ft->frames,&fte.hash_elem);
 	ASSERT(e!=NULL);
 	free(hash_entry(e,struct frame_table_entry, hash_elem));
+	lock_release(&frame_table_lock);
 }
 
 void frame_table_destroy(void){

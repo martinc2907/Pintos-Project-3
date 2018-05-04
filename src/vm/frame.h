@@ -6,6 +6,7 @@
 #include <hash.h>
 
 struct frame_table * ft;
+struct lock frame_table_lock;
 
 struct frame_table{
 	struct hash frames;	/* Actual hash table */
@@ -16,6 +17,7 @@ struct frame_table_entry{
 	struct hash_elem hash_elem;
 	void * upage;	/* Pointer to user page. */
 	int tid; 		/* Need to store tid since upage can overlap, since we're dealing with all threads. */
+	bool pinned; 	/* Pin frames so they cannot be evicted. */
 };
 
 

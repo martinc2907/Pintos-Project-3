@@ -14,14 +14,12 @@ extern struct swap_table * swap_table_ptr;
 /* Create swap table */
 //bitmap is initally all set to false. false = block available. true=in use.
 void swap_create(void){
-	printf("CREATING SWAP TABLE\n");
 	int no_of_pages;
 
 	swap_table_ptr = malloc(sizeof(struct swap_table));
 	swap_table_ptr->swap_block = block_get_role(BLOCK_SWAP);
 	no_of_pages = block_size(swap_table_ptr->swap_block)/8;
 	swap_table_ptr->swap_bitmap = bitmap_create(no_of_pages);
-	printf("FINISHING SWAP TABLE\n");
 }
 
 /* Write page in RAM to page in Block. */

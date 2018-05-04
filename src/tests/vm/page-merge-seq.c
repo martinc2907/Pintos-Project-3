@@ -27,7 +27,6 @@ init (void)
   size_t i;
 
   msg ("init");
-
   arc4_init (&arc4, "foobar", 6);
   arc4_crypt (&arc4, buf1, sizeof buf1);
   for (i = 0; i < sizeof buf1; i++)

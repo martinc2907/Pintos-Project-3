@@ -17,6 +17,9 @@
 /* Number of page faults processed. */
 static long long page_fault_cnt;
 
+/* Page fault lock */
+extern struct lock page_fault_lock;
+
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
 static void stack_grow(void);
@@ -41,6 +44,9 @@ install_page (void *upage, void *kpage, bool writable);
 void
 exception_init (void) 
 {
+  /* Initialise page fault lock. */
+  lock_init(&page_fault_lock);
+
   /* These exceptions can be raised explicitly by a user program,
      e.g. via the INT, INT3, INTO, and BOUND instructions.  Thus,
      we set DPL==3, meaning that user programs are allowed to
@@ -152,6 +158,9 @@ page_fault (struct intr_frame *f)
      be assured of reading CR2 before it changed). */
   intr_enable ();
 
+  /* Lock on */
+  lock_acquire(&page_fault_lock);
+
   /* Count page faults. */
   page_fault_cnt++;
 
@@ -166,13 +175,15 @@ page_fault (struct intr_frame *f)
     if(user){
       if(fault_addr >= f->esp || f->esp-4== fault_addr || f->esp-32 == fault_addr){
         stack_grow();
+        lock_release(&page_fault_lock);
         return;
       }
     }else{
       void * esp = thread_current()->user_esp;
-      int stack_boundary = thread_current()->stack_boundary;
+      void * stack_boundary = thread_current()->stack_boundary;
       if(fault_addr < stack_boundary){
         stack_grow();
+        lock_release(&page_fault_lock);
         return;
       }
     }
@@ -190,7 +201,6 @@ page_fault (struct intr_frame *f)
     /* Check if invalid access- kernel or writing r/o */
     if( fault_addr == NULL ||is_kernel_vaddr(fault_addr) || 
           (write && !not_present) || ste == NULL){
-      printf("FILE: %s\n", thread_current()->file_name);
       terminate_thread();
     }
     
@@ -232,11 +242,14 @@ page_fault (struct intr_frame *f)
         ASSERT(false);
         break;
     }
+    lock_release(&page_fault_lock);
     return;
   }
 
   //How to handle kernel page faults?
   else{
+    lock_release(&page_fault_lock);
+
     printf ("Page fault at %p: %s error %s page in %s context.\n",
           fault_addr,
           not_present ? "not present" : "rights violation",

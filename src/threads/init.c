@@ -132,10 +132,8 @@ main (void)
   filesys_init (format_filesys);
 #endif
 
-  printf("BEFORE CREATING TABLES\n");
   frame_table_create(user_page_limit);
   swap_create();
-  printf("AFTER CREATING TABLES\n");
 
   printf ("Boot complete.\n");
   
