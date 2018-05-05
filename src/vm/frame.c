@@ -9,11 +9,14 @@
 #include "vm/page.h"
 
 extern struct frame_table * ft;
+struct list evict_list;
 extern struct lock frame_table_lock;
+struct list_elem * clock;	//algo checks from the next el where clock points. 
 
 static unsigned frame_hash(const struct hash_elem *f_, void * aux UNUSED);
 static bool frame_less(const struct hash_elem *a_, const struct hash_elem *b_,void * aux UNUSED);
 static void free_each_entry(struct hash_elem * e, void * aux);
+
 
 /* Creates frame table for all the processes. This should be initalised
 	in init.c */
@@ -22,8 +25,8 @@ void frame_table_create(int max_size_){
 	ft = malloc(sizeof (struct frame_table));
 	ft->max_size = max_size_;	//replace with the number of avaialble physical frames.
 	hash_init(&ft->frames, frame_hash,frame_less,NULL);
+	list_init(&evict_list);
 	lock_init(&frame_table_lock);
-  	// printf("FINISHING FRAME TABLE\n");
 }
 
 
@@ -32,15 +35,26 @@ void frame_table_create(int max_size_){
 	Used like this:  if(palloc != null), ~. if(palloc == null),~.
 */
 void frame_table_set_frame(void * upage, int tid){
+	// printf("setting frame\n");
 	ASSERT(hash_size(&ft->frames) < ft->max_size);
 	ASSERT(frame_table_lookup(upage, tid)== NULL);
 
 	lock_acquire(&frame_table_lock);
+
 	struct frame_table_entry * f = malloc(sizeof(struct frame_table_entry));
 	f->upage = upage; 
 	f->tid = tid;
 	f->pinned = false;
+	f->owner_thread = thread_current();
 	hash_insert(&ft->frames, &f->hash_elem);
+	list_push_front(&evict_list,&f->list_elem);
+
+	/* Make clock point to the only element. */
+	if(list_size(&evict_list)==1){
+		clock = list_front(&evict_list);
+	}
+	ASSERT(clock!=NULL);
+
 	lock_release(&frame_table_lock);
 
 	ASSERT(frame_table_lookup(upage,tid)!= NULL);
@@ -48,38 +62,98 @@ void frame_table_set_frame(void * upage, int tid){
 
 
 
-/* Evict a frame.  */
+/* Evict a frame- second chance algorithm w/ clock.  */
 void frame_table_evict_frame(){
 
-	/* Evict one randomly for now */
 	uint32_t * pagedir = thread_current()->pagedir;
 	void * kpage;
 	void * upage;
+	struct frame_table_entry * fte;
+	struct hash_elem * e;
+	struct list_elem * le;
 
-	/* Delete from frame table */
 	lock_acquire(&frame_table_lock);
-	struct hash_iterator i;
-	hash_first(&i,&ft->frames);
 
-	//hash_next(&i);
-	while(hash_next(&i)){
-		struct frame_table_entry * temp = hash_entry(hash_cur(&i), struct frame_table_entry, hash_elem);
-		
-		if(temp->pinned == false){
-			break;
+	/* Choose frame to evict. */
+	/* method using iterator didn't work-> use lists. */
+	// //set iterator to clock.
+	// hash_first(&i,&ft->frames);
+	// do{
+	// 	hash_next(&i);
+	// }while(hash_cur(&i) != clock);
+	// printf("%u\n",hash_cur(&i));
+
+	// //find frame to evict.
+	// while(true){
+	// 	fte = hash_entry(hash_cur(&i), struct frame_table_entry, hash_elem);
+	// 	upage = fte->upage;
+	// 	//if access bit 0.
+	// 	if(!pagedir_is_accessed(pagedir, upage)){
+	// 		if(fte->pinned == false){
+	// 			clock = hash_next(&i);
+	// 			if(clock == NULL){
+	// 				hash_first(&i,&ft->frames);
+	// 				clock = hash_next(&i);
+	// 			}
+	// 			break;
+	// 		}
+	// 	//if access bit 1, make it 0.
+	// 	}else{
+	// 		pagedir_set_accessed(pagedir, upage,false);
+	// 	}
+	// 	//moves to next. do roundabout.
+	// 	if(hash_next(&i) == NULL){
+	// 		printf("ROUND\n");
+	// 		hash_first(&i,&ft->frames);
+	// 		hash_next(&i);
+	// 	}
+	// }
+
+	//examine from clock element.
+	le = clock;
+	while(true){
+		fte = list_entry(le, struct frame_table_entry, list_elem);
+		upage = fte->upage;
+		if(!pagedir_is_accessed(pagedir, upage)){
+			if(fte->pinned == false){
+				clock = list_next(le);
+				if(clock == list_end(&evict_list)){
+					clock = list_front(&evict_list);
+				}
+				break;
+			}
+		}else{
+			pagedir_set_accessed(pagedir, upage, false);
+		}
+		le = list_next(le);
+		if(le == list_end(&evict_list)){
+			le = list_front(&evict_list);
 		}
 	}
 
-	struct hash_elem * e = hash_delete(&ft->frames,hash_cur(&i));
-	ASSERT(e != NULL);
+	// //temporary- evict first frame.
+	// le = list_front(&evict_list);
+	// fte = list_entry(le, struct frame_table_entry, list_elem);
 
-	lock_release(&frame_table_lock);
+	/* Delete from hash table and list. */
+	e = hash_delete(&ft->frames,&fte->hash_elem);
+	ASSERT(e != NULL);
+	list_remove(&fte->list_elem);
+	ASSERT(hash_size(&ft->frames) == list_size(&evict_list));
+
 
 	/* Frame table entry points to upage. Get kpage. */
-	struct frame_table_entry * fte = hash_entry(e, struct frame_table_entry, hash_elem);
+	struct thread * owner_thread = thread_current();
+	fte = hash_entry(e, struct frame_table_entry, hash_elem);
 	upage = fte->upage;
+	//what if evicted page is owned by different pid?
 	kpage = pagedir_get_page(pagedir, upage);
-	ASSERT(e != NULL);
+	if(kpage == NULL){
+		//evicted page owned by different thread.
+		owner_thread = fte->owner_thread;
+		pagedir = owner_thread->pagedir;
+		kpage = pagedir_get_page(pagedir, upage);
+	}
 
 	/* Free the entry */
 	free(fte);
@@ -89,8 +163,11 @@ void frame_table_evict_frame(){
 	palloc_free_page(kpage);
 
 	/* Update sup table and page table. */
-	sup_table_location_to_SWAP(upage, swap_location);
+	sup_table_location_to_SWAP(upage, swap_location, owner_thread);
 	pagedir_clear_page(pagedir, upage);
+
+	ASSERT(hash_size(&ft->frames)!=1);
+	lock_release(&frame_table_lock);
 }
 
 
@@ -110,9 +187,9 @@ struct frame_table_entry * frame_table_lookup(void * upage, int tid){
 
 /* Delete and free entry */
 void frame_table_delete_entry(void * upage, int tid){
-
 	lock_acquire(&frame_table_lock);
 	struct hash_elem * e;
+	struct frame_table_entry * p;
 
 	struct frame_table_entry fte; 
 	fte.upage = upage;
@@ -120,7 +197,11 @@ void frame_table_delete_entry(void * upage, int tid){
 
 	e = hash_delete(&ft->frames,&fte.hash_elem);
 	ASSERT(e!=NULL);
-	free(hash_entry(e,struct frame_table_entry, hash_elem));
+	p = hash_entry(e, struct frame_table_entry, hash_elem);
+	//ASSERT(clock != &p->list_elem); 	//if caught here, make sure to update clock.
+	clock = list_next(&p->list_elem);
+	list_remove(&p->list_elem);
+	free(p);
 	lock_release(&frame_table_lock);
 }
 

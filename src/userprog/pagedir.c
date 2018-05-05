@@ -6,6 +6,7 @@
 #include "threads/pte.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
+#include "userprog/exception.h"
 #include "vm/frame.h"
 #include "vm/page.h"
 #include "vm/swap.h"
@@ -32,7 +33,9 @@ pagedir_create (void)
 void
 pagedir_destroy (uint32_t *pd) 
 {
+  struct thread * cur= thread_current();
   uint32_t *pde;
+  lock_acquire(&page_fault_lock);
 
   if (pd == NULL)
     return;
@@ -52,20 +55,20 @@ pagedir_destroy (uint32_t *pd)
           void * upage = (void *)( (pd_index<<22) | (pt_index<<12));
           if (*pte & PTE_P){ 
             // printf("free: %d\n",upage);
-
             palloc_free_page (pte_get_page (*pte));
             frame_table_delete_entry(upage, thread_current()->tid);
           }else{
             /* Check if upage has been allocated at all*/
-            if(sup_table_lookup(upage) != NULL){
+            if(sup_table_lookup(upage,cur) != NULL){
               /* Empty swap slot. */
-              swap_free(sup_table_lookup(upage)->index);
+              swap_free(sup_table_lookup(upage,cur)->index);
             }
           }
         }
         palloc_free_page(pt);
       }
   palloc_free_page (pd);
+  lock_release(&page_fault_lock);
 }
 
 /* Returns the address of the page table entry for virtual

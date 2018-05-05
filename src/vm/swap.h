@@ -18,6 +18,7 @@ int swap_out(void * kpage);
 bool swap_in(void * kpage, int bitmap_index);
 void swap_free(int index);
 void swap_destroy(void);
+int swap_count(void);
 
 
 #endif

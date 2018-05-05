@@ -125,7 +125,6 @@ syscall_handler (struct intr_frame *f UNUSED)
 			break;
 
 		default:
-			printf("system call!\n");
 			thread_exit();
 	}
 }
@@ -315,7 +314,7 @@ static void read_handler(struct intr_frame *f){
 	/* Make sure buffer is a valid address. */
 	//IMPORTANT: not pg_no, it's pg_round_down.
 	void * upage = pg_round_down(buffer);
-	if(sup_table_lookup(upage)->writeable != true){
+	if(sup_table_lookup(upage, thread_current())->writeable != true){
 		terminate_thread();
 	}
 
@@ -546,7 +545,7 @@ static void check_user_pointer(struct intr_frame *f, void * user_ptr){
 
 	/* Check if mapped somewhere */
 	void * upage = pg_round_down(user_ptr);
-	struct sup_table_entry * ste = sup_table_lookup(upage);
+	struct sup_table_entry * ste = sup_table_lookup(upage,cur);
 	if(ste == NULL){
 		terminate_thread();
 		return;
@@ -565,7 +564,7 @@ static void check_user_pointer(struct intr_frame *f, void * user_ptr){
 
         /* Update tables */
         pagedir_set_page(cur->pagedir, upage, kpage, ste->writeable);
-        sup_table_location_to_RAM(upage); //this must be called after swap in like so, since index gets altered.
+        sup_table_location_to_RAM(upage,cur); //this must be called after swap in like so, since index gets altered.
         frame_table_set_frame(upage, cur->tid);
 	}
 	lock_release(&page_fault_lock);

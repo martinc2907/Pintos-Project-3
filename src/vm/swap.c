@@ -39,6 +39,7 @@ int swap_out(void * kpage){
 		block_write(swap_table_ptr->swap_block, sector_index + i , kpage);
 		kpage += BLOCK_SECTOR_SIZE;
 	}
+
 	return index;
 }
 
@@ -55,6 +56,10 @@ bool swap_in(void * kpage, int bitmap_index){
 
 	return true;
 }	
+
+int swap_count(void){
+	return bitmap_count(swap_table_ptr->swap_bitmap, 0, bitmap_size(swap_table_ptr->swap_bitmap), true);
+}
 
 /* Marks swap slot at index as available. */
 void swap_free(int index){

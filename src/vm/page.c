@@ -46,7 +46,7 @@ void sup_table_set_page(void * upage, bool writeable){
 	struct sup_table * s_t = cur->sup_table;
 
 	//make sure the sup table entry doesn't already exist. 
-	ASSERT(sup_table_lookup(upage) == NULL);
+	ASSERT(sup_table_lookup(upage,cur) == NULL);
 
 	/* Make entry in sup table */
 	ste = malloc(sizeof(struct sup_table_entry));
@@ -62,37 +62,37 @@ void sup_table_set_page(void * upage, bool writeable){
 
 /* Modifies the location of the page. (IN_RAM? IN_FILESYS? IN_SWAP?) */
 /* Remember, upage has to be valid all the time for hashing. cannot be null */
-void sup_table_location_to_RAM(void * upage){
+void sup_table_location_to_RAM(void * upage, struct thread * t){
 	/* Make sure entry exists in the table already. */
-	ASSERT(sup_table_lookup(upage)!= NULL);
+	ASSERT(sup_table_lookup(upage,t)!= NULL);
 
-	struct sup_table_entry * ste = sup_table_lookup(upage);
+	struct sup_table_entry * ste = sup_table_lookup(upage,t);
 	ste->location = IN_RAM;
 	ste->index = -1;	/* invalidate the index */
 						/* invalidate file descriptor. */
 }
 
-void sup_table_location_to_SWAP(void * upage, int index){
-	ASSERT(sup_table_lookup(upage)!= NULL);
+void sup_table_location_to_SWAP(void * upage, int index, struct thread * t){
+	ASSERT(sup_table_lookup(upage,t)!= NULL);
 
-	struct sup_table_entry * ste = sup_table_lookup(upage);
+	struct sup_table_entry * ste = sup_table_lookup(upage,t);
 	ste->location = IN_SWAP;
 	ste->index = index;	
 						/* invalidate the file descriptor. */
 }
 
-void sup_table_location_to_FILE(void * upage, int fd){
- 	ASSERT(sup_table_lookup(upage)!= NULL);
+void sup_table_location_to_FILE(void * upage, int fd, struct thread * t){
+ 	ASSERT(sup_table_lookup(upage,t)!= NULL);
 
- 	struct sup_table_entry * ste = sup_table_lookup(upage);
+ 	struct sup_table_entry * ste = sup_table_lookup(upage,t);
  	ste->location = IN_FILESYS;
 
  	//Do stuff. 
 }
 
 //Look up the frame.
-struct sup_table_entry * sup_table_lookup(void * upage){
-	struct thread * cur = thread_current();
+struct sup_table_entry * sup_table_lookup(void * upage, struct thread * t){
+	struct thread * cur = t;
 	struct sup_table * st = cur->sup_table;
 	struct sup_table_entry ste;
 	struct hash_elem * e;

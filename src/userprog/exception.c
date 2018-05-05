@@ -169,14 +169,22 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
+  struct thread * cur = thread_current();
+  void * upage = (void *) pg_round_down(fault_addr);
+  void * kpage;
+  struct sup_table_entry * ste = sup_table_lookup(upage,cur);
+
+
   /* Stack growth if necessary */
   //first check if within stack boundaries. 
   if( fault_addr < PHYS_BASE && fault_addr >= PHYS_BASE - STACK_LIMIT){
     if(user){
       if(fault_addr >= f->esp || f->esp-4== fault_addr || f->esp-32 == fault_addr){
-        stack_grow();
-        lock_release(&page_fault_lock);
-        return;
+        if(ste == NULL){
+          stack_grow();
+          lock_release(&page_fault_lock);
+          return;
+        }
       }
     }else{
       void * esp = thread_current()->user_esp;
@@ -193,14 +201,11 @@ page_fault (struct intr_frame *f)
   if(user){
     /* Before dealing with page fault, make sure no other process is dealing with page fault. */
     //have a page fault lock or disable interrupts?
-    struct thread * cur = thread_current();
-    void * upage = (void *) pg_round_down(fault_addr);
-    void * kpage;
-    struct sup_table_entry * ste = sup_table_lookup(upage);
 
     /* Check if invalid access- kernel or writing r/o */
     if( fault_addr == NULL ||is_kernel_vaddr(fault_addr) || 
           (write && !not_present) || ste == NULL){
+      lock_release(&page_fault_lock);
       terminate_thread();
     }
     
@@ -209,6 +214,7 @@ page_fault (struct intr_frame *f)
 
       case ALL_ZERO:
         //terminate thread and free all resources
+        lock_release(&page_fault_lock);
         terminate_thread();
         break;
 
@@ -232,7 +238,7 @@ page_fault (struct intr_frame *f)
 
         /* Update tables */
         pagedir_set_page(cur->pagedir, upage, kpage, ste->writeable);
-        sup_table_location_to_RAM(upage); //this must be called after swap in like so, since index gets altered.
+        sup_table_location_to_RAM(upage,cur); //this must be called after swap in like so, since index gets altered.
         frame_table_set_frame(upage, cur->tid);
         break;
 
@@ -278,6 +284,8 @@ static void stack_grow(void){
 
   /* Stack limit- 8MB */
   if(cur->stack_size >= STACK_LIMIT){
+    printf("term pf error\n");
+    lock_release(&page_fault_lock);
     terminate_thread();
   }
 

@@ -610,6 +610,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
+  lock_acquire(&page_fault_lock);
   file_seek (file, ofs);
   while (read_bytes > 0 || zero_bytes > 0) 
     {
@@ -620,20 +621,19 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
-      lock_acquire(&page_fault_lock);
       uint8_t *kpage = palloc_get_page (PAL_USER);
       if (kpage == NULL){
         frame_table_evict_frame();
         kpage = palloc_get_page(PAL_USER);
         ASSERT(kpage != NULL);
       }
-      lock_release(&page_fault_lock);
       //return false if mem allocation fails. 
 
       /* Load this page. */
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
         {
           palloc_free_page (kpage);
+          lock_release(&page_fault_lock);
           return false; 
         }
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
@@ -642,6 +642,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       if (!install_page (upage, kpage, writable)) 
         {
           palloc_free_page (kpage);
+          lock_release(&page_fault_lock);
           return false; 
         }
 
@@ -650,6 +651,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
     }
+  lock_release(&page_fault_lock);
   return true;
 }
 
@@ -669,7 +671,6 @@ setup_stack (void **esp)
     kpage = palloc_get_page(PAL_USER);
     ASSERT(kpage != NULL);
   }
-  lock_release(&page_fault_lock);
 
   success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
   cur->stack_boundary = ((uint8_t *) PHYS_BASE) - PGSIZE;
@@ -679,6 +680,7 @@ setup_stack (void **esp)
   else
     palloc_free_page (kpage);
   
+  lock_release(&page_fault_lock);
 
   return success;
 }
@@ -697,21 +699,21 @@ install_page (void *upage, void *kpage, bool writable)
 {
   struct thread *t = thread_current ();
 
-  lock_acquire(&page_fault_lock);
+  // lock_acquire(&page_fault_lock);
 
   /* Verify that there's not already a page at that virtual address */
   if(pagedir_get_page(t->pagedir, upage) != NULL){
-    lock_release(&page_fault_lock);
+    //lock_release(&page_fault_lock);
     return false;
   }
 
   if(pagedir_set_page(t->pagedir, upage,kpage,writable)){
     frame_table_set_frame(upage, t->tid);
     sup_table_set_page(upage, writable);
-    lock_release(&page_fault_lock);
+    //lock_release(&page_fault_lock);
     return true;
   }
-  lock_release(&page_fault_lock);
+  // lock_release(&page_fault_lock);
   return false;
 
   // /* Verify that there's not already a page at that virtual
