@@ -205,7 +205,6 @@ page_fault (struct intr_frame *f)
     /* Check if invalid access- kernel or writing r/o */
     if( fault_addr == NULL ||is_kernel_vaddr(fault_addr) || 
           (write && !not_present) || ste == NULL){
-      lock_release(&page_fault_lock);
       terminate_thread();
     }
     
@@ -214,7 +213,6 @@ page_fault (struct intr_frame *f)
 
       case ALL_ZERO:
         //terminate thread and free all resources
-        lock_release(&page_fault_lock);
         terminate_thread();
         break;
 
@@ -264,9 +262,6 @@ page_fault (struct intr_frame *f)
     kill (f);
 
   }
-
-
-
   // /* To implement virtual memory, delete the rest of the function
   //    body, and replace it with code that brings in the page to
   //    which fault_addr refers. */
@@ -285,7 +280,6 @@ static void stack_grow(void){
   /* Stack limit- 8MB */
   if(cur->stack_size >= STACK_LIMIT){
     printf("term pf error\n");
-    lock_release(&page_fault_lock);
     terminate_thread();
   }
 

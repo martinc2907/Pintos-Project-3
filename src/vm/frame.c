@@ -74,41 +74,6 @@ void frame_table_evict_frame(){
 
 	lock_acquire(&frame_table_lock);
 
-	/* Choose frame to evict. */
-	/* method using iterator didn't work-> use lists. */
-	// //set iterator to clock.
-	// hash_first(&i,&ft->frames);
-	// do{
-	// 	hash_next(&i);
-	// }while(hash_cur(&i) != clock);
-	// printf("%u\n",hash_cur(&i));
-
-	// //find frame to evict.
-	// while(true){
-	// 	fte = hash_entry(hash_cur(&i), struct frame_table_entry, hash_elem);
-	// 	upage = fte->upage;
-	// 	//if access bit 0.
-	// 	if(!pagedir_is_accessed(pagedir, upage)){
-	// 		if(fte->pinned == false){
-	// 			clock = hash_next(&i);
-	// 			if(clock == NULL){
-	// 				hash_first(&i,&ft->frames);
-	// 				clock = hash_next(&i);
-	// 			}
-	// 			break;
-	// 		}
-	// 	//if access bit 1, make it 0.
-	// 	}else{
-	// 		pagedir_set_accessed(pagedir, upage,false);
-	// 	}
-	// 	//moves to next. do roundabout.
-	// 	if(hash_next(&i) == NULL){
-	// 		printf("ROUND\n");
-	// 		hash_first(&i,&ft->frames);
-	// 		hash_next(&i);
-	// 	}
-	// }
-
 	//examine from clock element.
 	le = clock;
 	while(true){
@@ -199,7 +164,9 @@ void frame_table_delete_entry(void * upage, int tid){
 	ASSERT(e!=NULL);
 	p = hash_entry(e, struct frame_table_entry, hash_elem);
 	//ASSERT(clock != &p->list_elem); 	//if caught here, make sure to update clock.
-	clock = list_next(&p->list_elem);
+	if(clock == &p->list_elem){
+		clock = list_next(&p->list_elem);
+	}
 	list_remove(&p->list_elem);
 	free(p);
 	lock_release(&frame_table_lock);

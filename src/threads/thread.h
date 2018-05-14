@@ -121,11 +121,24 @@ struct thread
     void * stack_boundary;
     int stack_size;
     void * user_esp;
+    int map_id;
+    struct list mmap_page_list;
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
   };
 
+
+struct mmap_page{
+  void * upage;
+  void * kpage;
+  int map_id;
+  struct file * file;
+  struct inode * inode;
+  int offset;
+
+  struct list_elem list_elem;
+};
 
 /* Struct representing child thread data */
 struct child {

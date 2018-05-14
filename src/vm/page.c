@@ -60,6 +60,20 @@ void sup_table_set_page(void * upage, bool writeable){
 }
 
 
+void sup_table_delete_entry(void * upage){
+	struct hash_elem * e;
+	struct sup_table_entry * p;
+	struct sup_table * s_t = thread_current()->sup_table;
+
+	struct sup_table_entry ste; 
+	ste.upage = upage;
+
+	e = hash_delete(&s_t->supplementals,&ste.hash_elem);
+	ASSERT(e!=NULL);
+	p = hash_entry(e, struct sup_table_entry, hash_elem);
+	free(p);
+}
+
 /* Modifies the location of the page. (IN_RAM? IN_FILESYS? IN_SWAP?) */
 /* Remember, upage has to be valid all the time for hashing. cannot be null */
 void sup_table_location_to_RAM(void * upage, struct thread * t){

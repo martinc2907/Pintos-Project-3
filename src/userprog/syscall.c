@@ -15,6 +15,7 @@
 #include "vm/page.h"
 #include "vm/frame.h"
 #include "vm/swap.h"
+#include "threads/vaddr.h"
 
 #include "userprog/exception.h"
 static void syscall_handler (struct intr_frame *);
@@ -33,14 +34,17 @@ static void write_handler(struct intr_frame *f);
 static void seek_handler(struct intr_frame *f);
 static void tell_handler(struct intr_frame *f);
 static void close_handler(struct intr_frame *f);
+static void mmap_handler(struct intr_frame *f);
+static void munmap_handler(struct intr_frame *f);
 
 /* General helper functions */
 static struct child * search_child(struct thread * t, pid_t pid);
 static struct file_info * search_file_info(int fd);
 static int add_file_info(struct file * f);
+static void add_mmap_page(void * upage, void * kpage, struct file * f, int offset);
 
 /* Helper functions for checking user pointer validity */
-static void check_user_pointer(struct intr_frame *f, void * user_ptr);
+static void check_user_pointer(void * user_ptr);
 static void check_ustack_boundaries(struct intr_frame *f, int no_of_args);
 
 //
@@ -49,7 +53,7 @@ static void unpin_frame(void * uaddr);
 
 
 /* Global variable accessed by accessible by all threads. */
-struct lock file_lock;
+extern struct lock file_lock;
 
 extern struct lock page_fault_lock;
 
@@ -67,7 +71,7 @@ static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
 	void * user_esp = f->esp;
-	check_user_pointer(f,user_esp);	//check if esp is valid.
+	check_user_pointer(user_esp);	//check if esp is valid.
 	int sys_call_no = *((int *)user_esp);
 	thread_current()->user_esp = f->esp;	//for page fault handling.
 
@@ -124,6 +128,17 @@ syscall_handler (struct intr_frame *f UNUSED)
 			close_handler(f);
 			break;
 
+
+		/* NOT IMPLEMENTED YET */
+		case SYS_MMAP:
+			mmap_handler(f);
+			break;
+		case SYS_MUNMAP:
+			munmap_handler(f);
+			break;
+
+
+
 		default:
 			thread_exit();
 	}
@@ -169,7 +184,7 @@ static void exec_handler(struct intr_frame *f){
 
 	cmd_line = *((char **)(f->esp+4));
 	check_ustack_boundaries(f, 1); //1 arg
-	check_user_pointer(f,cmd_line);
+	check_user_pointer(cmd_line);
 
 	pin_frame(cmd_line);
 
@@ -208,7 +223,7 @@ static void create_handler(struct intr_frame *f){
 
 	/* Check validity of arguments */
 	check_ustack_boundaries(f, 2); //2 arg
-	check_user_pointer(f,file);
+	check_user_pointer(file);
 
 	pin_frame(file);
 
@@ -230,7 +245,7 @@ static void remove_handler(struct intr_frame *f){
 
 	/* Check validity of arguments */
 	check_ustack_boundaries(f, 1); //1 arg
-	check_user_pointer(f,file);
+	check_user_pointer(file);
 
 	pin_frame(file);
 
@@ -253,7 +268,7 @@ static void open_handler(struct intr_frame *f){
 
 	/* Check validity of arguments */
 	check_ustack_boundaries(f, 1); //1 arg
-	check_user_pointer(f,name);
+	check_user_pointer(name);
 
 	pin_frame(name);
 
@@ -307,7 +322,7 @@ static void read_handler(struct intr_frame *f){
 
 	/* Check validity of arguments */
 	check_ustack_boundaries(f, 3); //3 arg
-	check_user_pointer(f,buffer);
+	check_user_pointer(buffer);
 
 	pin_frame(buffer);
 
@@ -365,7 +380,7 @@ static void write_handler(struct intr_frame * f){
 
 	/* Check validity of arguments */
 	check_ustack_boundaries(f, 3); //3 arg
-	check_user_pointer(f,buffer);
+	check_user_pointer(buffer);
 
 	pin_frame(buffer);
 
@@ -469,6 +484,143 @@ static void close_handler(struct intr_frame *f){
 	}
 }
 
+static void mmap_handler(struct intr_frame *f){
+	int fd;
+	void * addr;
+	int file_size;
+	int no_of_pages;
+	struct thread * cur = thread_current();
+
+	void * upage;
+	void * kpage;
+	struct file * file;
+	struct file_info * fi;
+	int i;
+
+	fd = *((int *)(f->esp + 4));
+	addr = *((void **)(f->esp + 8));
+
+	check_ustack_boundaries(f,2);
+	//check_user_pointer(addr);
+
+	if((int)addr == 0){
+		f->eax = -1;return;
+	}
+	fi = search_file_info(fd);
+
+	if(fi == NULL){
+		f->eax = -1;return;
+	}
+
+	if(pg_round_down(addr) != addr){
+		f->eax = -1;return;
+	}
+
+	if(fd == 0 || fd == 1){
+		f->eax = -1;return;
+	}
+
+	lock_acquire(&file_lock);
+	file_size = file_length(fi->file);
+	if(file_size == 0){
+		lock_release(&file_lock);
+		f->eax = -1;return;
+	}
+	lock_release(&file_lock);
+
+	/* Check if the consecutive pages overlap with any other pages.*/
+	no_of_pages = file_size/PGSIZE; 
+	if(file_size%PGSIZE != 0)
+		no_of_pages++;
+	upage = addr;
+	for(i =0; i < no_of_pages; i++){
+		if(pagedir_get_page(cur->pagedir, upage + i*PGSIZE)!=NULL){
+			f->eax = -1;return;
+		}
+	}
+
+	/* Acquire locks. */
+	lock_acquire(&file_lock);
+	lock_acquire(&page_fault_lock);
+
+	/* Reopen file for reading. */
+	file = file_reopen(fi->file);
+
+	/* Map the pages */
+	for(i =0; i < no_of_pages; i++){
+		kpage = palloc_get_page(PAL_USER|PAL_ZERO);
+		if(kpage == NULL){
+			frame_table_evict_frame();
+			kpage = palloc_get_page(PAL_USER|PAL_ZERO);
+			ASSERT(kpage!=NULL);
+		}
+		pagedir_set_page(cur->pagedir,upage+i*PGSIZE,kpage,true);
+		frame_table_set_frame(upage+i*PGSIZE,cur->tid);
+		sup_table_set_page(upage+i*PGSIZE,true);
+
+		pin_frame(upage+i*PGSIZE);	//mapped pages are un-evictable.
+
+		file_read(file, kpage, PGSIZE);
+		//printf("mmap: %s\n", kpage);
+
+		add_mmap_page(upage+i*PGSIZE,kpage,fi->file,i);	//add to list of mmaped pages.
+	}
+
+	/* Close file after reading. */
+	file_close(file);
+
+	lock_release(&page_fault_lock);
+	lock_release(&file_lock);
+
+	/* Return map id. */
+	f->eax = cur->map_id;
+	cur->map_id++;
+}
+
+static void munmap_handler(struct intr_frame *f){
+	int map_id = *((int *)(f->esp + 4));
+	check_ustack_boundaries(f,1);
+
+	struct thread * cur = thread_current();
+
+	struct list_elem * e;
+	struct list * l = &cur->mmap_page_list;
+	struct file * file = NULL;
+	struct mmap_page * mp;
+
+	lock_acquire(&file_lock);
+	lock_acquire(&page_fault_lock);
+
+
+	for(e = list_begin(l); e!= list_end(l); e = list_next(e)){
+    	mp = list_entry(e, struct mmap_page, list_elem);
+    	if(mp->map_id == map_id){
+    		/* Write back to file if page is dirtied. */
+    		if(pagedir_is_dirty(cur->pagedir, mp->upage)){
+    			file = file_reopen(mp->file);
+    			file_write_at(file, mp->kpage,PGSIZE,mp->offset);
+    			file_close(file);
+    		}
+
+    		/* Free the page and frame. */
+    		palloc_free_page(mp->kpage);
+    		pagedir_clear_page(cur->pagedir,mp->upage);
+    		frame_table_delete_entry(mp->upage, cur->tid);
+    		sup_table_delete_entry(mp->upage);
+
+    		/* Remove from list and free. */
+    		list_remove(e);
+    		struct list_elem temp = *e;	//copy list elem.
+    		free(mp);
+    		e = &temp;	//restore it.
+    	}
+	}
+
+
+	lock_release(&page_fault_lock);
+	lock_release(&file_lock);
+}
+
 
 
 /* -------------- Helper function definitions -------------- */
@@ -515,8 +667,8 @@ static void check_ustack_boundaries(struct intr_frame *f, int no_of_args){
 }
 
 /* Checks the validity of pointers handed by user thread. */
-static void check_user_pointer(struct intr_frame *f, void * user_ptr){
-	void * kernel_address;
+static void check_user_pointer(void * user_ptr){
+	//void * kernel_address;
 	struct thread * cur = thread_current();
 
 	/* Check if NULL */
@@ -577,7 +729,7 @@ static void pin_frame(void * uaddr){
 	void * upage = pg_round_down(uaddr);
 	struct thread * cur = thread_current();
 
-	lock_acquire(&page_fault_lock);
+	//lock_acquire(&page_fault_lock);
 
 	/* Do pinning frame */
 	struct frame_table_entry * fte;
@@ -585,7 +737,7 @@ static void pin_frame(void * uaddr){
 	ASSERT(fte!= NULL);
 	fte->pinned = true;
 
-	lock_release(&page_fault_lock);
+	//lock_release(&page_fault_lock);
 
 }
 
@@ -593,7 +745,7 @@ static void unpin_frame(void * uaddr){
 	void * upage = pg_round_down(uaddr);
 	struct thread * cur = thread_current();
 
-	lock_acquire(&page_fault_lock);
+	//lock_acquire(&page_fault_lock);
 
 	/* Do pinning frame */
 	struct frame_table_entry * fte;
@@ -601,7 +753,7 @@ static void unpin_frame(void * uaddr){
 	ASSERT(fte!= NULL);
 	fte->pinned = false;
 
-	lock_release(&page_fault_lock);
+	//lock_release(&page_fault_lock);
 }
 
 /* Function similar to exit_handler. Newly defined with -1 exit status because esp might be invalid. */
@@ -624,6 +776,11 @@ void terminate_thread(){
 		sema_up(&c->sema);	
 	}
 
+
+	if(lock_held_by_current_thread(&page_fault_lock)){
+		lock_release(&page_fault_lock);
+	}
+
 	printf ("%s: exit(%d)\n", thread_current()->file_name,exit_status);
 	thread_exit(); //CHECK IF I NEED TO FREE EVERYTHING.
 }
@@ -641,6 +798,22 @@ static int add_file_info(struct file * f){
   	list_push_front(&cur->file_info_list, &fi->file_info_elem);
 
   	return (fi->fd);
+}
+
+
+static void add_mmap_page(void * upage, void * kpage, struct file * f, int offset_index){
+	struct thread * cur = thread_current();
+
+	struct mmap_page * mp = malloc(sizeof(struct mmap_page));
+
+	mp->upage = upage;
+	mp->kpage = kpage;
+	mp->map_id = cur->map_id;
+	mp->file = f;
+	mp->inode = file_get_inode(f);
+	mp->offset = offset_index*PGSIZE;
+
+	list_push_front(&cur->mmap_page_list, &mp->list_elem);
 }
 
 

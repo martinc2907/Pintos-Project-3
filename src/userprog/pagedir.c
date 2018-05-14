@@ -10,6 +10,8 @@
 #include "vm/frame.h"
 #include "vm/page.h"
 #include "vm/swap.h"
+#include "filesys/file.h"
+#include "userprog/syscall.h"
 
 
 static uint32_t *active_pd (void);
@@ -39,6 +41,26 @@ pagedir_destroy (uint32_t *pd)
 
   if (pd == NULL)
     return;
+
+  /* Write back all dirtied pages to file. */
+  struct list_elem * e;
+  struct list * l = &cur->mmap_page_list;
+  struct file * f;
+  lock_acquire(&file_lock);
+
+  if(list_size(l)!= NULL){
+    for(e = list_begin(l); e != list_end(l); e = list_next(e)){
+      struct mmap_page * mp = list_entry(e, struct mmap_page, list_elem);
+      if(pagedir_is_dirty(pd, mp->upage)){
+        /* Write back to file. */
+        f = file_reopen(mp->file);
+        file_write_at(f, mp->kpage,PGSIZE,mp->offset);
+        file_close(f);
+      }
+    }
+  }
+  lock_release(&file_lock);
+
 
   ASSERT (pd != init_page_dir);
   for (pde = pd; pde < pd + pd_no (PHYS_BASE); pde++)

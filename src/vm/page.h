@@ -33,6 +33,7 @@ void sup_table_location_to_SWAP(void * upage, int index, struct thread * t);
 void sup_table_location_to_FILE(void * upage, int fd, struct thread * t);	//change this later.
 struct sup_table_entry * sup_table_lookup(void * upage, struct thread * t);
 void sup_table_destroy(struct sup_table * st);
+void sup_table_delete_entry(void * upage);
 
 
 #endif

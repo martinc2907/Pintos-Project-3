@@ -333,6 +333,13 @@ thread_exit (void)
     free(fi);
   }
 
+  /* Free the list of mmap_page things. */
+  while(!list_empty(&cur->mmap_page_list)){
+    struct list_elem * e = list_pop_front(&cur->mmap_page_list);
+    struct mmap_page * mp = list_entry(e, struct mmap_page, list_elem);
+    free(mp);
+  }
+
   /* Free sup table */
   sup_table_destroy(cur->sup_table);
 
@@ -520,6 +527,8 @@ init_thread (struct thread *t, const char *name, int priority, void * aux)
   /* init for userprog */
   list_init(&t->children_list);
   list_init(&t->file_info_list);
+  list_init(&t->mmap_page_list);
+  t->map_id = 0;
   t->max_fd = 2;
   sema_init(&t->load_sema, 0);
   
