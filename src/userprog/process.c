@@ -620,31 +620,11 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
-      /* Get a page of memory. */
-      uint8_t *kpage = palloc_get_page (PAL_USER);
-      if (kpage == NULL){
-        frame_table_evict_frame();
-        kpage = palloc_get_page(PAL_USER);
-        ASSERT(kpage != NULL);
-      }
-      //return false if mem allocation fails. 
+      sup_table_set_page(upage, writable);
+      file = file_reopen(file);
+      sup_table_location_to_FILE(upage, file, ofs, page_read_bytes, page_zero_bytes, thread_current());
 
-      /* Load this page. */
-      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
-        {
-          palloc_free_page (kpage);
-          lock_release(&page_fault_lock);
-          return false; 
-        }
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
-
-      /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
-        {
-          palloc_free_page (kpage);
-          lock_release(&page_fault_lock);
-          return false; 
-        }
+      ofs+= PGSIZE;
 
       /* Advance. */
       read_bytes -= page_read_bytes;

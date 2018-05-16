@@ -4,13 +4,16 @@
 #include "threads/palloc.h"
 #include "threads/malloc.h"
 #include "threads/thread.h"
+#include "threads/vaddr.h"
 #include "userprog/pagedir.h"
+#include "userprog/syscall.h"
 #include "vm/swap.h"
 #include "vm/page.h"
 
 extern struct frame_table * ft;
 struct list evict_list;
 extern struct lock frame_table_lock;
+extern struct lock file_lock;
 struct list_elem * clock;	//algo checks from the next el where clock points. 
 
 static unsigned frame_hash(const struct hash_elem *f_, void * aux UNUSED);
@@ -96,10 +99,6 @@ void frame_table_evict_frame(){
 		}
 	}
 
-	// //temporary- evict first frame.
-	// le = list_front(&evict_list);
-	// fte = list_entry(le, struct frame_table_entry, list_elem);
-
 	/* Delete from hash table and list. */
 	e = hash_delete(&ft->frames,&fte->hash_elem);
 	ASSERT(e != NULL);
@@ -112,27 +111,61 @@ void frame_table_evict_frame(){
 	fte = hash_entry(e, struct frame_table_entry, hash_elem);
 	upage = fte->upage;
 	//what if evicted page is owned by different pid?
-	kpage = pagedir_get_page(pagedir, upage);
-	if(kpage == NULL){
-		//evicted page owned by different thread.
-		owner_thread = fte->owner_thread;
-		pagedir = owner_thread->pagedir;
-		kpage = pagedir_get_page(pagedir, upage);
-	}
+	owner_thread = fte->owner_thread;
+	pagedir = owner_thread->pagedir;
+	kpage = pagedir_get_page(owner_thread->pagedir, upage);
+
+	// kpage = pagedir_get_page(pagedir, upage);
+	// if(kpage == NULL){
+	// 	//evicted page owned by different thread.
+	// 	owner_thread = fte->owner_thread;
+	// 	pagedir = owner_thread->pagedir;
+	// 	kpage = pagedir_get_page(pagedir, upage);
+	// }
 
 	/* Free the entry */
 	free(fte);
 	
-	/* Swap out this page to swap slot, then free the physical frame. */
-	int swap_location = swap_out(kpage);
-	palloc_free_page(kpage);
+	struct sup_table_entry * ste = sup_table_lookup(upage,owner_thread);
 
-	/* Update sup table and page table. */
-	sup_table_location_to_SWAP(upage, swap_location, owner_thread);
-	pagedir_clear_page(pagedir, upage);
+	// A frame has been allocated to the page, so it was tarnsferrd to RAM at one point.
+	/* File system. */
+	if(ste->from_file){
+		ASSERT(pagedir_get_page(owner_thread->pagedir, upage)!= NULL);
+		/* Write out to swap if dirtied. */
+		if(pagedir_is_dirty(owner_thread->pagedir, upage)){
+			int swap_location = swap_out(kpage);
+			palloc_free_page(kpage);
 
-	ASSERT(hash_size(&ft->frames)!=1);
-	lock_release(&frame_table_lock);
+			sup_table_location_to_SWAP(upage, swap_location, owner_thread);
+			pagedir_clear_page(owner_thread->pagedir, upage);
+			lock_release(&frame_table_lock);
+		}
+
+		/* Page only accessed, not dirtied. */
+		else{
+			palloc_free_page(kpage);
+			sup_table_location_to_FILE(upage, ste->file, ste->offset, ste->read, ste->zero, owner_thread);
+			pagedir_clear_page(owner_thread->pagedir, upage);
+			lock_release(&frame_table_lock);
+		}
+	}
+
+	/* Swap slots. */
+	else{
+		//printf("swap:%u\n", (int) upage);
+		/* Swap out this page to swap slot, then free the physical frame. */
+		int swap_location = swap_out(kpage);
+		palloc_free_page(kpage);
+
+		/* Update sup table and page table. */
+		sup_table_location_to_SWAP(upage, swap_location, owner_thread);
+		pagedir_clear_page(owner_thread->pagedir, upage);
+
+		ASSERT(hash_size(&ft->frames)!=1);
+		lock_release(&frame_table_lock);
+	}
+
 }
 
 

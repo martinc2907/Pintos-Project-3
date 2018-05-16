@@ -2,14 +2,11 @@
 #include "threads/malloc.h"
 #include <stdio.h>
 
-
-
 /* Bitmap represents whether the pages are free. Bit at index represents whether
 	page at index is free.
 	Each bit represents a page, which is 8 sectors.  */
 
 extern struct swap_table * swap_table_ptr;
-
 
 /* Create swap table */
 //bitmap is initally all set to false. false = block available. true=in use.
@@ -28,7 +25,7 @@ int swap_out(void * kpage){
 	int i;
 	int index = bitmap_scan_and_flip(swap_table_ptr->swap_bitmap,0,1,false);
 	if(index == BITMAP_ERROR){
-		printf("FUCKK QUIT\n");
+		printf("NOt dealt with!! \n");
 		//no space in swap block.
 		//do something.( see manual)
 	}

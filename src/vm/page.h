@@ -22,6 +22,11 @@ struct sup_table_entry{
 	void * upage;	/* Page In RAM- don't really need to store this. */
 	int index; 		/* Page in Swap slot-bitmap index */
 					/* Page in filesys */
+	int zero;
+	int read;
+	bool from_file;
+	struct file * file;
+	int offset;
 	bool writeable; 
 };
 
@@ -30,7 +35,7 @@ struct sup_table * sup_table_create(void);
 void sup_table_set_page(void * upage, bool writeable);
 void sup_table_location_to_RAM(void * upage, struct thread * t);
 void sup_table_location_to_SWAP(void * upage, int index, struct thread * t);
-void sup_table_location_to_FILE(void * upage, int fd, struct thread * t);	//change this later.
+void sup_table_location_to_FILE(void * upage, struct file * f, int offset, int read, int zero, struct thread * t);	//change this later.
 struct sup_table_entry * sup_table_lookup(void * upage, struct thread * t);
 void sup_table_destroy(struct sup_table * st);
 void sup_table_delete_entry(void * upage);

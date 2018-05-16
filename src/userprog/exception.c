@@ -19,6 +19,7 @@ static long long page_fault_cnt;
 
 /* Page fault lock */
 extern struct lock page_fault_lock;
+extern struct lock file_lock;
 
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
@@ -224,10 +225,10 @@ page_fault (struct intr_frame *f)
 
       case IN_SWAP:
         /* Obtain a frame- factor this? */
-        kpage = palloc_get_page(PAL_USER);
+        kpage = palloc_get_page(PAL_USER|PAL_ZERO);
         if(kpage == NULL){
           frame_table_evict_frame();
-          kpage = palloc_get_page(PAL_USER);
+          kpage = palloc_get_page(PAL_USER|PAL_ZERO);
           ASSERT(kpage != NULL);
         }
 
@@ -236,14 +237,34 @@ page_fault (struct intr_frame *f)
 
         /* Update tables */
         pagedir_set_page(cur->pagedir, upage, kpage, ste->writeable);
+        if(ste->from_file){
+          pagedir_set_dirty(cur->pagedir, upage, true);
+        }
         sup_table_location_to_RAM(upage,cur); //this must be called after swap in like so, since index gets altered.
         frame_table_set_frame(upage, cur->tid);
         break;
 
       case IN_FILESYS:
-        //same thing as IN_SWAP.
-        //not implemented yet, so 
-        ASSERT(false);
+        /* Obtain a frame to copy to from file. */
+        kpage = palloc_get_page(PAL_USER|PAL_ZERO);
+        if(kpage == NULL){
+          frame_table_evict_frame();
+          kpage = palloc_get_page(PAL_USER|PAL_ZERO);
+          ASSERT(kpage!=NULL);
+        }
+
+        /* Read data from file. */
+        lock_acquire(&file_lock);
+        file_read_at(ste->file, kpage, ste->read, ste->offset);
+        lock_release(&file_lock);
+
+        memset(kpage+ste->read, 0, ste->zero);
+
+        /* Update tables*/
+        sup_table_location_to_RAM(upage, cur);
+        pagedir_set_page(cur->pagedir, upage, kpage, ste->writeable);
+        frame_table_set_frame(upage, cur->tid);
+
         break;
     }
     lock_release(&page_fault_lock);
@@ -262,15 +283,6 @@ page_fault (struct intr_frame *f)
     kill (f);
 
   }
-  // /* To implement virtual memory, delete the rest of the function
-  //    body, and replace it with code that brings in the page to
-  //    which fault_addr refers. */
-  // printf ("Page fault at %p: %s error %s page in %s context.\n",
-  //         fault_addr,
-  //         not_present ? "not present" : "rights violation",
-  //         write ? "writing" : "reading",
-  //         user ? "user" : "kernel");
-  // kill (f);
 }
 
 static void stack_grow(void){

@@ -20,7 +20,6 @@ test_main (void)
   int fd;
 
   CHECK (create (file_name, sizeof buf1), "create \"%s\"", file_name);
-
   exec_children ("child-syn-wrt", children, CHILD_CNT);
   wait_children (children, CHILD_CNT);
 

@@ -6,6 +6,7 @@
 #include "threads/pte.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
+#include "threads/malloc.h"
 #include "userprog/exception.h"
 #include "vm/frame.h"
 #include "vm/page.h"
@@ -16,6 +17,8 @@
 
 static uint32_t *active_pd (void);
 static void invalidate_pagedir (uint32_t *);
+
+extern struct lock file_lock;
 
 /* Creates a new page directory that has mappings for kernel
    virtual addresses, but none for user virtual addresses.
@@ -42,24 +45,44 @@ pagedir_destroy (uint32_t *pd)
   if (pd == NULL)
     return;
 
-  /* Write back all dirtied pages to file. */
-  struct list_elem * e;
-  struct list * l = &cur->mmap_page_list;
-  struct file * f;
-  lock_acquire(&file_lock);
+  //no need to destroy ste, fte, swap slots.
 
-  if(list_size(l)!= NULL){
-    for(e = list_begin(l); e != list_end(l); e = list_next(e)){
-      struct mmap_page * mp = list_entry(e, struct mmap_page, list_elem);
-      if(pagedir_is_dirty(pd, mp->upage)){
-        /* Write back to file. */
-        f = file_reopen(mp->file);
-        file_write_at(f, mp->kpage,PGSIZE,mp->offset);
-        file_close(f);
-      }
-    }
-  }
-  lock_release(&file_lock);
+  // /* Write back all dirtied pages to file. */
+  // struct list_elem * e;
+  // struct list * l = &cur->mmap_page_list;
+  // struct file * f;
+  // lock_acquire(&file_lock);
+
+  // if(list_size(l)!= 0){
+  //   for(e = list_begin(l); e != list_end(l); e = list_next(e)){
+
+  //     struct mmap_page * mp = list_entry(e, struct mmap_page, list_elem);
+  //     struct sup_table_entry * ste = sup_table_lookup(mp->upage, cur);
+  //     if(ste->location == IN_RAM){
+  //       if(pagedir_is_dirty(pd,ste->upage)){
+  //         void * kpage = pagedir_get_page(pd,ste->upage);
+  //         file_write_at(ste->file, kpage, PGSIZE, ste->offset);
+  //       }
+  //     }
+  //     else if(ste->location == IN_SWAP){
+  //       void * kpage = palloc_get_page(0);
+  //       swap_in(kpage, ste->index);
+  //       file_write_at(ste->file, kpage, PGSIZE, ste->offset);
+  //       palloc_free_page(kpage);
+  //       swap_free(ste->index);
+  //       sup_table_
+  //     }
+
+  //     /* Delete entry in list. */
+  //     list_remove(e);
+  //     struct list_elem temp = *e; //copy list elem.
+  //     free(mp);
+  //     e = &temp;  //restore it.
+  //   }
+  //   //file_close(f);  //close file here.
+  // }
+  // lock_release(&file_lock);
+
 
 
   ASSERT (pd != init_page_dir);
@@ -75,15 +98,44 @@ pagedir_destroy (uint32_t *pd)
           int pd_index = pde - pd;
           int pt_index = pte - pt;
           void * upage = (void *)( (pd_index<<22) | (pt_index<<12));
+          struct sup_table_entry * ste = sup_table_lookup(upage, cur);
+
+          /* PTE valid */
           if (*pte & PTE_P){ 
-            // printf("free: %d\n",upage);
-            palloc_free_page (pte_get_page (*pte));
-            frame_table_delete_entry(upage, thread_current()->tid);
-          }else{
+            ASSERT(ste!=NULL);
+            void * kpage = pte_get_page(*pte);
+
+            /* if dirty and from file, write to file. */
+            if(pagedir_is_dirty(pd, upage) && ste->from_file){
+              lock_acquire(&file_lock);
+              file_write_at(ste->file, kpage, PGSIZE, ste->offset);
+              lock_release(&file_lock);
+              palloc_free_page(kpage);
+              frame_table_delete_entry(upage, thread_current()->tid);
+            }
+            /* is accessed and from file, or not from file. */
+            else{
+              palloc_free_page (kpage);
+              frame_table_delete_entry(upage, thread_current()->tid);
+            }
+          }
+
+          /* PTE not existing */
+          else{
             /* Check if upage has been allocated at all*/
-            if(sup_table_lookup(upage,cur) != NULL){
-              /* Empty swap slot. */
-              swap_free(sup_table_lookup(upage,cur)->index);
+            if(ste != NULL){
+              if(ste->location == IN_SWAP){
+                if(ste->from_file){
+                  /* write to file */
+                  void * kpage = palloc_get_page(0);
+                  swap_in(kpage, ste->index);
+                  lock_acquire(&file_lock);
+                  file_write_at(ste->file, kpage,PGSIZE, ste->offset);
+                  lock_release(&file_lock);
+                  palloc_free_page(kpage);
+                }
+                swap_free(ste->index);
+              }
             }
           }
         }

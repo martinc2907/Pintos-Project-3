@@ -131,7 +131,7 @@ struct thread
 
 struct mmap_page{
   void * upage;
-  void * kpage;
+  //void * kpage;
   int map_id;
   struct file * file;
   struct inode * inode;

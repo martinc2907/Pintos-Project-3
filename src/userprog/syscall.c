@@ -1,6 +1,7 @@
 #include "userprog/syscall.h"
 #include <stdio.h>
 #include <syscall-nr.h>
+#include <string.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "devices/shutdown.h"
@@ -41,10 +42,10 @@ static void munmap_handler(struct intr_frame *f);
 static struct child * search_child(struct thread * t, pid_t pid);
 static struct file_info * search_file_info(int fd);
 static int add_file_info(struct file * f);
-static void add_mmap_page(void * upage, void * kpage, struct file * f, int offset);
+static void add_mmap_page(void * upage, struct file * f, int offset);
 
 /* Helper functions for checking user pointer validity */
-static void check_user_pointer(void * user_ptr);
+static void check_user_pointer(void * user_ptr,int size);
 static void check_ustack_boundaries(struct intr_frame *f, int no_of_args);
 
 //
@@ -71,7 +72,7 @@ static void
 syscall_handler (struct intr_frame *f UNUSED) 
 {
 	void * user_esp = f->esp;
-	check_user_pointer(user_esp);	//check if esp is valid.
+	check_user_pointer(user_esp,0);	//check if esp is valid.
 	int sys_call_no = *((int *)user_esp);
 	thread_current()->user_esp = f->esp;	//for page fault handling.
 
@@ -184,7 +185,7 @@ static void exec_handler(struct intr_frame *f){
 
 	cmd_line = *((char **)(f->esp+4));
 	check_ustack_boundaries(f, 1); //1 arg
-	check_user_pointer(cmd_line);
+	check_user_pointer(cmd_line,0);
 
 	pin_frame(cmd_line);
 
@@ -223,7 +224,7 @@ static void create_handler(struct intr_frame *f){
 
 	/* Check validity of arguments */
 	check_ustack_boundaries(f, 2); //2 arg
-	check_user_pointer(file);
+	check_user_pointer(file,0);
 
 	pin_frame(file);
 
@@ -245,7 +246,7 @@ static void remove_handler(struct intr_frame *f){
 
 	/* Check validity of arguments */
 	check_ustack_boundaries(f, 1); //1 arg
-	check_user_pointer(file);
+	check_user_pointer(file,0);
 
 	pin_frame(file);
 
@@ -268,7 +269,7 @@ static void open_handler(struct intr_frame *f){
 
 	/* Check validity of arguments */
 	check_ustack_boundaries(f, 1); //1 arg
-	check_user_pointer(name);
+	check_user_pointer(name,0);
 
 	pin_frame(name);
 
@@ -320,18 +321,22 @@ static void read_handler(struct intr_frame *f){
 	buffer = *((void **)(f->esp+8));
 	size = *((unsigned *)(f->esp+12));
 
+
 	/* Check validity of arguments */
 	check_ustack_boundaries(f, 3); //3 arg
-	check_user_pointer(buffer);
+	check_user_pointer(buffer,size);
 
 	pin_frame(buffer);
 
 	/* Make sure buffer is a valid address. */
 	//IMPORTANT: not pg_no, it's pg_round_down.
 	void * upage = pg_round_down(buffer);
+	lock_acquire(&page_fault_lock);
 	if(sup_table_lookup(upage, thread_current())->writeable != true){
+		lock_release(&page_fault_lock);
 		terminate_thread();
 	}
+	lock_release(&page_fault_lock);
 
 	fi  = search_file_info(fd);
 	if(fi == NULL){
@@ -353,7 +358,7 @@ static void read_handler(struct intr_frame *f){
 		return;
 	}
 
-
+	
 	lock_acquire(&file_lock);
 	bytes_read = file_read(fi->file, buffer, size);
 	lock_release(&file_lock);
@@ -380,23 +385,9 @@ static void write_handler(struct intr_frame * f){
 
 	/* Check validity of arguments */
 	check_ustack_boundaries(f, 3); //3 arg
-	check_user_pointer(buffer);
+	check_user_pointer(buffer,size);
 
 	pin_frame(buffer);
-
-	// /* Check if buffer is in writeable section. (pt-write-code-2.c)*/
-	// void * upage = pg_no(buffer);//get upage first.
-	// //check if upage is writable by checking sup table. 
-	// printf("handling write\n");
-	// if(sup_table_lookup(upage) == NULL){
-	// 	printf("FUCK\n");
-	// }
-	// if(sup_table_lookup(upage)->writeable != true){
-	// 		printf("here1\n");
-
-	// 	terminate_thread();
-	// }
-	// printf("here2\n");
 
 	/* Write to console */
 	if(fd == 1){
@@ -492,7 +483,6 @@ static void mmap_handler(struct intr_frame *f){
 	struct thread * cur = thread_current();
 
 	void * upage;
-	void * kpage;
 	struct file * file;
 	struct file_info * fi;
 	int i;
@@ -503,23 +493,21 @@ static void mmap_handler(struct intr_frame *f){
 	check_ustack_boundaries(f,2);
 	//check_user_pointer(addr);
 
+
+	/* Robustness checks */
 	if((int)addr == 0){
 		f->eax = -1;return;
 	}
 	fi = search_file_info(fd);
-
 	if(fi == NULL){
 		f->eax = -1;return;
 	}
-
 	if(pg_round_down(addr) != addr){
 		f->eax = -1;return;
 	}
-
 	if(fd == 0 || fd == 1){
 		f->eax = -1;return;
 	}
-
 	lock_acquire(&file_lock);
 	file_size = file_length(fi->file);
 	if(file_size == 0){
@@ -528,13 +516,14 @@ static void mmap_handler(struct intr_frame *f){
 	}
 	lock_release(&file_lock);
 
+
 	/* Check if the consecutive pages overlap with any other pages.*/
 	no_of_pages = file_size/PGSIZE; 
 	if(file_size%PGSIZE != 0)
 		no_of_pages++;
 	upage = addr;
 	for(i =0; i < no_of_pages; i++){
-		if(pagedir_get_page(cur->pagedir, upage + i*PGSIZE)!=NULL){
+		if(sup_table_lookup(upage+i*PGSIZE, cur)!= NULL){
 			f->eax = -1;return;
 		}
 	}
@@ -545,35 +534,38 @@ static void mmap_handler(struct intr_frame *f){
 
 	/* Reopen file for reading. */
 	file = file_reopen(fi->file);
+	int offset = 0;
 
 	/* Map the pages */
 	for(i =0; i < no_of_pages; i++){
-		kpage = palloc_get_page(PAL_USER|PAL_ZERO);
-		if(kpage == NULL){
-			frame_table_evict_frame();
-			kpage = palloc_get_page(PAL_USER|PAL_ZERO);
-			ASSERT(kpage!=NULL);
-		}
-		pagedir_set_page(cur->pagedir,upage+i*PGSIZE,kpage,true);
-		frame_table_set_frame(upage+i*PGSIZE,cur->tid);
+		// kpage = palloc_get_page(PAL_USER|PAL_ZERO);
+		// if(kpage == NULL){
+		// 	frame_table_evict_frame();
+		// 	kpage = palloc_get_page(PAL_USER|PAL_ZERO);
+		// 	ASSERT(kpage!=NULL);
+		// }
+		// pagedir_set_page(cur->pagedir,upage+i*PGSIZE,kpage,true);
+		// frame_table_set_frame(upage+i*PGSIZE,cur->tid);
 		sup_table_set_page(upage+i*PGSIZE,true);
+		sup_table_location_to_FILE(upage+i*PGSIZE, file, offset, PGSIZE, 0, cur);
+		//pin_frame(upage+i*PGSIZE);	//mapped pages are un-evictable.
 
-		pin_frame(upage+i*PGSIZE);	//mapped pages are un-evictable.
+		//file_read(file, kpage, PGSIZE);
 
-		file_read(file, kpage, PGSIZE);
-		//printf("mmap: %s\n", kpage);
-
-		add_mmap_page(upage+i*PGSIZE,kpage,fi->file,i);	//add to list of mmaped pages.
+		add_mmap_page(upage+i*PGSIZE, file, i);	//add to list of mmaped pages.
+		offset += PGSIZE;
 	}
 
 	/* Close file after reading. */
-	file_close(file);
+	//file_close(file);
 
 	lock_release(&page_fault_lock);
 	lock_release(&file_lock);
 
 	/* Return map id. */
 	f->eax = cur->map_id;
+
+	/* Update map id */
 	cur->map_id++;
 }
 
@@ -591,22 +583,44 @@ static void munmap_handler(struct intr_frame *f){
 	lock_acquire(&file_lock);
 	lock_acquire(&page_fault_lock);
 
-
 	for(e = list_begin(l); e!= list_end(l); e = list_next(e)){
     	mp = list_entry(e, struct mmap_page, list_elem);
     	if(mp->map_id == map_id){
-    		/* Write back to file if page is dirtied. */
-    		if(pagedir_is_dirty(cur->pagedir, mp->upage)){
-    			file = file_reopen(mp->file);
-    			file_write_at(file, mp->kpage,PGSIZE,mp->offset);
-    			file_close(file);
-    		}
+    		struct sup_table_entry * ste = sup_table_lookup(mp->upage, cur);
+    		ASSERT(ste->upage == mp->upage);
+    		if(ste->location == IN_RAM){
+    			//Dirtied.
+    			//Accessed.
+    			if(pagedir_is_dirty(cur->pagedir, ste->upage)){
+    				void * kpage = pagedir_get_page(cur->pagedir, ste->upage);
+    				file_write_at(ste->file, kpage, PGSIZE, ste->offset);
 
-    		/* Free the page and frame. */
-    		palloc_free_page(mp->kpage);
-    		pagedir_clear_page(cur->pagedir,mp->upage);
-    		frame_table_delete_entry(mp->upage, cur->tid);
-    		sup_table_delete_entry(mp->upage);
+    				palloc_free_page(kpage);
+    				pagedir_clear_page(cur->pagedir, ste->upage);
+    				frame_table_delete_entry(ste->upage, cur->tid);
+    				sup_table_delete_entry(ste->upage);
+    			}
+    			else{
+    				void * kpage = pagedir_get_page(cur->pagedir, ste->upage);
+    				palloc_free_page(kpage);
+    				pagedir_clear_page(cur->pagedir, ste->upage);
+    				frame_table_delete_entry(ste->upage, cur->tid);
+    				sup_table_delete_entry(ste->upage);
+    			}
+    		}
+    		else if(ste->location == IN_FILESYS){
+    			//nothing.
+    			sup_table_delete_entry(ste->upage);
+    		}
+    		else if(ste->location == IN_SWAP){
+    			//write back since dirtied. 
+    			void * kpage = palloc_get_page(0);
+    			swap_in(kpage, ste->index);
+    			file_write_at(ste->file, kpage, PGSIZE, ste->offset);
+    			palloc_free_page(kpage);
+    			swap_free(ste->index);
+    			sup_table_delete_entry(ste->upage);
+    		}
 
     		/* Remove from list and free. */
     		list_remove(e);
@@ -615,7 +629,6 @@ static void munmap_handler(struct intr_frame *f){
     		e = &temp;	//restore it.
     	}
 	}
-
 
 	lock_release(&page_fault_lock);
 	lock_release(&file_lock);
@@ -667,7 +680,7 @@ static void check_ustack_boundaries(struct intr_frame *f, int no_of_args){
 }
 
 /* Checks the validity of pointers handed by user thread. */
-static void check_user_pointer(void * user_ptr){
+static void check_user_pointer(void * user_ptr, int size){
 	//void * kernel_address;
 	struct thread * cur = thread_current();
 
@@ -685,40 +698,63 @@ static void check_user_pointer(void * user_ptr){
 		return;
 	}
 
-	// /* Check if it's mapped */
-	// kernel_address = pagedir_get_page(thread_current()->pagedir, user_ptr);
-	// if(kernel_address == NULL){
-	// 	//Call exit with status -1.
-	// 	terminate_thread();
-	// 	return;
-	// }
-
 	lock_acquire(&page_fault_lock);
 
-	/* Check if mapped somewhere */
+	/* Check if mapped somewhere. if so, load them in to RAM.(due to lazy loading) */
 	void * upage = pg_round_down(user_ptr);
-	struct sup_table_entry * ste = sup_table_lookup(upage,cur);
-	if(ste == NULL){
-		terminate_thread();
-		return;
-	}
-	if(ste->location != IN_RAM){
-		/* Must bring into RAM through eviction */
-		void * kpage = palloc_get_page(PAL_USER);
-        if(kpage == NULL){
-          frame_table_evict_frame();
-          kpage = palloc_get_page(PAL_USER);
-          ASSERT(kpage != NULL);
-        }
+	void * copy_til = user_ptr + size;
+	while(copy_til > upage){
+		struct sup_table_entry * ste = sup_table_lookup(upage,cur);
+		if(ste == NULL){
+			terminate_thread();
+			return;
+		}
+		if(ste->location == IN_SWAP){
+			/* Must bring into RAM through eviction */
+			void * kpage = palloc_get_page(PAL_USER);
+	        if(kpage == NULL){
+	          frame_table_evict_frame();
+	          kpage = palloc_get_page(PAL_USER);
+	          ASSERT(kpage != NULL);
+	        }
 
-        /* Copy data into frame */
-        swap_in(kpage, ste->index);
+	        /* Copy data into frame */
+	        swap_in(kpage, ste->index);
 
-        /* Update tables */
-        pagedir_set_page(cur->pagedir, upage, kpage, ste->writeable);
-        sup_table_location_to_RAM(upage,cur); //this must be called after swap in like so, since index gets altered.
-        frame_table_set_frame(upage, cur->tid);
+	        /* Update tables */
+	        pagedir_set_page(cur->pagedir, upage, kpage, ste->writeable);
+	        if(ste->from_file)
+	        	pagedir_set_dirty(cur->pagedir, upage, true);
+	        sup_table_location_to_RAM(upage,cur); //this must be called after swap in like so, since index gets altered.
+	        frame_table_set_frame(upage, cur->tid);
+		}
+		else if(ste->location == IN_FILESYS){
+			void * kpage = palloc_get_page(PAL_USER);
+			if(kpage == NULL){
+				frame_table_evict_frame();
+				kpage = palloc_get_page(PAL_USER);
+				ASSERT(kpage!=NULL);
+			}
+
+			/* Read data from file. */
+			lock_acquire(&file_lock);
+			file_read_at(ste->file, kpage, ste->read, ste->offset);
+			lock_release(&file_lock);
+
+			memset(kpage + ste->read, 0, ste->zero);
+
+			/* Update tables */
+			sup_table_location_to_RAM(upage, cur);
+			pagedir_set_page(cur->pagedir, upage, kpage, ste->writeable);
+			frame_table_set_frame(upage, cur->tid);
+		}
+
+		upage += PGSIZE;
 	}
+
+
+
+
 	lock_release(&page_fault_lock);
 
 	/* User-ptr is valid if reached here. */	
@@ -729,7 +765,7 @@ static void pin_frame(void * uaddr){
 	void * upage = pg_round_down(uaddr);
 	struct thread * cur = thread_current();
 
-	//lock_acquire(&page_fault_lock);
+	lock_acquire(&page_fault_lock);
 
 	/* Do pinning frame */
 	struct frame_table_entry * fte;
@@ -737,7 +773,7 @@ static void pin_frame(void * uaddr){
 	ASSERT(fte!= NULL);
 	fte->pinned = true;
 
-	//lock_release(&page_fault_lock);
+	lock_release(&page_fault_lock);
 
 }
 
@@ -745,7 +781,7 @@ static void unpin_frame(void * uaddr){
 	void * upage = pg_round_down(uaddr);
 	struct thread * cur = thread_current();
 
-	//lock_acquire(&page_fault_lock);
+	lock_acquire(&page_fault_lock);
 
 	/* Do pinning frame */
 	struct frame_table_entry * fte;
@@ -753,7 +789,7 @@ static void unpin_frame(void * uaddr){
 	ASSERT(fte!= NULL);
 	fte->pinned = false;
 
-	//lock_release(&page_fault_lock);
+	lock_release(&page_fault_lock);
 }
 
 /* Function similar to exit_handler. Newly defined with -1 exit status because esp might be invalid. */
@@ -774,7 +810,7 @@ void terminate_thread(){
 		c->exit_status = exit_status;
 		/* Up mutex */
 		sema_up(&c->sema);	
-	}
+	} 
 
 
 	if(lock_held_by_current_thread(&page_fault_lock)){
@@ -784,8 +820,8 @@ void terminate_thread(){
 	printf ("%s: exit(%d)\n", thread_current()->file_name,exit_status);
 	thread_exit(); //CHECK IF I NEED TO FREE EVERYTHING.
 }
-
-/* Add file info */
+                          
+/* Add file info */             
 static int add_file_info(struct file * f){
 	struct thread * cur = thread_current();
 	struct file_info * fi = malloc(sizeof(struct file_info));
@@ -801,13 +837,13 @@ static int add_file_info(struct file * f){
 }
 
 
-static void add_mmap_page(void * upage, void * kpage, struct file * f, int offset_index){
+static void add_mmap_page(void * upage, struct file * f, int offset_index){
 	struct thread * cur = thread_current();
 
 	struct mmap_page * mp = malloc(sizeof(struct mmap_page));
 
 	mp->upage = upage;
-	mp->kpage = kpage;
+	// mp->kpage = kpage;
 	mp->map_id = cur->map_id;
 	mp->file = f;
 	mp->inode = file_get_inode(f);

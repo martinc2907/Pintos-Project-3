@@ -1,35 +1,17 @@
 #include "page.h"
 #include "threads/malloc.h"
 #include "threads/thread.h"
+#include "threads/vaddr.h"
 #include <stdio.h>
 
-
-/* 
-Locate the page that faulted in the supplemental page table. If the memory reference
-is valid, use the supplemental page table entry to locate the data that goes in the page,
-which might be in the file system, or in a swap slot, or it might simply be an all-zero
-page. If you implement sharing, the page’s data might even already be in a page frame,
-but not in the page table.
-
-
-Supplemental page table and page fault handler
-Change ‘process.c’ to record the necessary information
-in the supplemental page table when loading an executable and 
-setting up its stack. Implement loading of code and data segments 
-in the page fault handler. For now, consider only valid accesses.
-After this step, your kernel should pass all of the project 2 
-functionality test cases, but only some of the robustness tests.
-*/
-
+/* Static function declarations */
 static unsigned sup_table_hash(const struct hash_elem *p_, void * aux UNUSED);
-static bool sup_table_less(const struct hash_elem *a_, const struct hash_elem *b_,
-					void * aux UNUSED);
+static bool sup_table_less(const struct hash_elem *a_, const struct hash_elem *b_,void * aux UNUSED);
 static void free_each_entry(struct hash_elem * e, void * aux);
 
 /* Creates a supplemental page table. 
 	Should be called in thread_create or something. */
 struct sup_table * sup_table_create(void){
-	// printf("CREATING SUP TABLE\n");
 	struct sup_table * st;
 
 	st = malloc(sizeof(struct sup_table));
@@ -54,6 +36,9 @@ void sup_table_set_page(void * upage, bool writeable){
 	ste->writeable = writeable; 
 	ste->upage = upage;
 	ste->index = -1;
+	ste->from_file = false;
+	ste->read = PGSIZE;
+	ste->zero = 0;
 
 	//inserts element. 
 	hash_insert(&s_t->supplementals, &ste->hash_elem);
@@ -82,7 +67,6 @@ void sup_table_location_to_RAM(void * upage, struct thread * t){
 
 	struct sup_table_entry * ste = sup_table_lookup(upage,t);
 	ste->location = IN_RAM;
-	ste->index = -1;	/* invalidate the index */
 						/* invalidate file descriptor. */
 }
 
@@ -95,11 +79,17 @@ void sup_table_location_to_SWAP(void * upage, int index, struct thread * t){
 						/* invalidate the file descriptor. */
 }
 
-void sup_table_location_to_FILE(void * upage, int fd, struct thread * t){
+void sup_table_location_to_FILE(void * upage, struct file * file, int offset, int read, int zero, struct thread * t){
  	ASSERT(sup_table_lookup(upage,t)!= NULL);
 
  	struct sup_table_entry * ste = sup_table_lookup(upage,t);
  	ste->location = IN_FILESYS;
+ 	ste->file = file;
+ 	ste->offset = offset;
+ 	ste->read = read;
+ 	ste->zero = zero;
+ 	ste->from_file = true;
+
 
  	//Do stuff. 
 }
@@ -122,6 +112,18 @@ void sup_table_destroy(struct sup_table * st){
 	hash_destroy(&st->supplementals, free_each_entry);
 }
 
+
+
+
+
+
+
+
+
+
+
+
+/* ------------------- Static helper functions ------------------------ */
 static void free_each_entry(struct hash_elem * e, void * aux){
 	struct sup_table_entry * ste = hash_entry(e, struct sup_table_entry, hash_elem);
 	free(ste);
